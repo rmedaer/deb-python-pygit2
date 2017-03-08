@@ -1,3 +1,13 @@
+python-pygit2 (0.25.0-0.1) unstable; urgency=medium
+
+  * New upstream release
+  * Fixed debian/patches/removed-privacy-breach2.patch to remove
+    documentation images.
+  * Fixed config test in debian/patches/fix-config-test.patch
+  * Non-maintainer upload.
+
+ -- Raphael Medaer <raphael@medaer.me>  Wed, 08 Mar 2017 12:57:38 +0100
+
 python-pygit2 (0.24.1-1) unstable; urgency=medium
 
   * New upstream release
