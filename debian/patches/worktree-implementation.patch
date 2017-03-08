@@ -1,0 +1,384 @@
+diff --git a/src/pygit2.c b/src/pygit2.c
+index 47f9edb..edbfcff 100644
+--- a/src/pygit2.c
++++ b/src/pygit2.c
+@@ -66,6 +66,7 @@ extern PyTypeObject RemoteType;
+ extern PyTypeObject RefspecType;
+ extern PyTypeObject NoteType;
+ extern PyTypeObject NoteIterType;
++extern PyTypeObject WorktreeType;
+ 
+ 
+ PyDoc_STRVAR(discover_repository__doc__,
+@@ -254,6 +255,12 @@ moduleinit(PyObject* m)
+     ADD_CONSTANT_INT(m, GIT_REF_LISTALL)
+ 
+     /*
++     * Worktree
++     */
++    INIT_TYPE(WorktreeType, NULL, NULL)
++    ADD_TYPE(m, Worktree)
++
++    /*
+      * Branches
+      */
+     INIT_TYPE(BranchType, &ReferenceType, NULL);
+diff --git a/src/repository.c b/src/repository.c
+index ad3f4e8..a6215ae 100644
+--- a/src/repository.c
++++ b/src/repository.c
+@@ -37,6 +37,7 @@
+ #include "repository.h"
+ #include "branch.h"
+ #include "signature.h"
++#include "worktree.h"
+ #include <git2/odb_backend.h>
+ 
+ extern PyObject *GitError;
+@@ -1675,6 +1676,86 @@ Repository_expand_id(Repository *self, PyObject *py_hex)
+     return git_oid_to_python(&oid);
+ }
+ 
++PyDoc_STRVAR(Repository_add_worktree__doc__,
++    "add_worktree(name, path)\n"
++    "\n"
++    "Create a new worktree for this repository.");
++PyObject *
++Repository_add_worktree(Repository *self, PyObject *args)
++{
++    char *c_name;
++    char *c_path;
++    git_worktree *wt;
++    int err;
++
++    if (!PyArg_ParseTuple(args, "ss", &c_name, &c_path))
++        return NULL;
++
++    err = git_worktree_add(&wt, self->repo, c_name, c_path);
++    if (err < 0)
++        return Error_set(err);
++
++    return wrap_worktree(self, wt);
++}
++
++PyDoc_STRVAR(Repository_lookup_worktree__doc__,
++    "lookup_worktree(name) -> Worktree\n"
++    "\n"
++    "Lookup a worktree from its name.");
++PyObject *
++Repository_lookup_worktree(Repository *self, PyObject *args)
++{
++    char *c_name;
++    git_worktree *wt;
++    int err;
++
++    if (!PyArg_ParseTuple(args, "s", &c_name))
++        return NULL;
++
++    err = git_worktree_lookup(&wt, self->repo, c_name);
++    if (err < 0)
++        return Error_set(err);
++
++    return wrap_worktree(self, wt);
++}
++
++PyDoc_STRVAR(Repository_list_worktrees__doc__,
++    "list_worktrees() -> [str, ...]\n"
++    "\n"
++    "Return a list with all the worktrees of this repository.");
++PyObject *
++Repository_list_worktrees(Repository *self, PyObject *args)
++{
++    git_strarray c_result;
++    PyObject *py_result, *py_string;
++    unsigned index;
++    int err;
++
++    /* Get the C result */
++    err = git_worktree_list(&c_result, self->repo);
++    if (err < 0)
++        return Error_set(err);
++
++    /* Create a new PyTuple */
++    py_result = PyList_New(c_result.count);
++    if (py_result == NULL)
++        goto out;
++
++    /* Fill it */
++    for (index=0; index < c_result.count; index++) {
++        py_string = to_path(c_result.strings[index]);
++        if (py_string == NULL) {
++            Py_CLEAR(py_result);
++            goto out;
++        }
++        PyList_SET_ITEM(py_result, index, py_string);
++    }
++
++out:
++    git_strarray_free(&c_result);
++    return py_result;
++}
++
+ PyMethodDef Repository_methods[] = {
+     METHOD(Repository, create_blob, METH_VARARGS),
+     METHOD(Repository, create_blob_fromworkdir, METH_VARARGS),
+@@ -1709,6 +1790,9 @@ PyMethodDef Repository_methods[] = {
+     METHOD(Repository, create_branch, METH_VARARGS),
+     METHOD(Repository, reset, METH_VARARGS),
+     METHOD(Repository, expand_id, METH_O),
++    METHOD(Repository, add_worktree, METH_VARARGS),
++    METHOD(Repository, lookup_worktree, METH_VARARGS),
++    METHOD(Repository, list_worktrees, METH_VARARGS),
+     METHOD(Repository, _from_c, METH_VARARGS),
+     METHOD(Repository, _disown, METH_NOARGS),
+     {NULL}
+diff --git a/src/types.h b/src/types.h
+index 44ae946..f189192 100644
+--- a/src/types.h
++++ b/src/types.h
+@@ -75,6 +75,13 @@ SIMPLE_TYPE(Tree, git_tree, tree)
+ SIMPLE_TYPE(Blob, git_blob, blob)
+ SIMPLE_TYPE(Tag, git_tag, tag)
+ 
++/* git_worktree */
++typedef struct {
++    PyObject_HEAD
++    Repository *repo;
++    git_worktree *worktree;
++} Worktree;
++
+ /* git_note */
+ typedef struct {
+     PyObject_HEAD
+diff --git a/src/worktree.c b/src/worktree.c
+new file mode 100644
+index 0000000..9448c85
+--- /dev/null
++++ b/src/worktree.c
+@@ -0,0 +1,173 @@
++/*
++ * Copyright 2010-2015 The pygit2 contributors
++ *
++ * This file is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License, version 2,
++ * as published by the Free Software Foundation.
++ *
++ * In addition to the permissions in the GNU General Public License,
++ * the authors give you unlimited permission to link the compiled
++ * version of this file into combinations with other programs,
++ * and to distribute those combinations without any restriction
++ * coming from the use of this file.  (The General Public License
++ * restrictions do apply in other respects; for example, they cover
++ * modification of the file, and distribution when not linked into
++ * a combined executable.)
++ *
++ * This file is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; see the file COPYING.  If not, write to
++ * the Free Software Foundation, 51 Franklin Street, Fifth Floor,
++ * Boston, MA 02110-1301, USA.
++ */
++
++#define PY_SSIZE_T_CLEAN
++#include <Python.h>
++#include <structmember.h>
++#include "error.h"
++#include "utils.h"
++#include "types.h"
++#include "worktree.h"
++
++
++PyDoc_STRVAR(Worktree_name__doc__,
++    "Gets name worktree\n");
++PyObject *
++Worktree_name__get__(Worktree *self)
++{
++    return to_unicode(self->worktree->name, NULL, NULL);
++}
++
++PyDoc_STRVAR(Worktree_path__doc__,
++    "Gets path worktree\n");
++PyObject *
++Worktree_path__get__(Worktree *self)
++{
++    return to_unicode(self->worktree->gitlink_path, NULL, NULL);
++}
++
++PyDoc_STRVAR(Worktree_git_path__doc__,
++    "Gets dir within .git path\n");
++PyObject *
++Worktree_git_path__get__(Worktree *self)
++{
++    return to_unicode(self->worktree->gitdir_path, NULL, NULL);
++}
++
++PyDoc_STRVAR(Worktree_is_prunable__doc__,
++    "Is the worktree prunable with the given set of flags?\n");
++PyObject *
++Worktree_is_prunable__get__(Worktree *self, PyObject *args)
++{
++    return (git_worktree_is_prunable(self->worktree, 0) > 0) ? Py_True : Py_False;
++}
++
++PyDoc_STRVAR(Worktree_prune__doc__,
++    "prune(force=False)\n"
++    "\n"
++    "Prune a worktree object.");
++PyObject *
++Worktree_prune(Worktree *self, PyObject *args)
++{
++    int err, force = 0;
++
++    if (!PyArg_ParseTuple(args, "|i", &force))
++        return NULL;
++
++    err = git_worktree_prune(self->worktree, force & (GIT_WORKTREE_PRUNE_VALID | GIT_WORKTREE_PRUNE_LOCKED));
++    if (err < 0)
++        return Error_set(err);
++
++    // TODO should I have to deallocate myself ?
++ 
++    Py_RETURN_NONE;
++}
++
++static void
++Worktree_dealloc(Worktree *self)
++{
++    Py_CLEAR(self->repo);
++    git_worktree_free(self->worktree);
++    PyObject_Del(self);
++}
++
++
++PyMethodDef Worktree_methods[] = {
++    METHOD(Worktree, prune, METH_VARARGS),
++    {NULL}
++};
++
++PyGetSetDef Worktree_getseters[] = {
++    GETTER(Worktree, path),
++    GETTER(Worktree, git_path),
++    GETTER(Worktree, name),
++    GETTER(Worktree, is_prunable),
++    {NULL}
++};
++
++PyDoc_STRVAR(Worktree__doc__, "Worktree object.");
++
++PyTypeObject WorktreeType = {
++    PyVarObject_HEAD_INIT(NULL, 0)
++    "_pygit2.Worktree",                        /* tp_name           */
++    sizeof(Worktree),                          /* tp_basicsize      */
++    0,                                         /* tp_itemsize       */
++    (destructor)Worktree_dealloc,              /* tp_dealloc        */
++    0,                                         /* tp_print          */
++    0,                                         /* tp_getattr        */
++    0,                                         /* tp_setattr        */
++    0,                                         /* tp_compare        */
++    0,                                         /* tp_repr           */
++    0,                                         /* tp_as_number      */
++    0,                                         /* tp_as_sequence    */
++    0,                                         /* tp_as_mapping     */
++    0,                                         /* tp_hash           */
++    0,                                         /* tp_call           */
++    0,                                         /* tp_str            */
++    0,                                         /* tp_getattro       */
++    0,                                         /* tp_setattro       */
++    0,                                         /* tp_as_buffer      */
++    Py_TPFLAGS_DEFAULT,                        /* tp_flags          */
++    Worktree__doc__,                           /* tp_doc            */
++    0,                                         /* tp_traverse       */
++    0,                                         /* tp_clear          */
++    0,                                         /* tp_richcompare    */
++    0,                                         /* tp_weaklistoffset */
++    0,                                         /* tp_iter           */
++    0,                                         /* tp_iternext       */
++    Worktree_methods,                          /* tp_methods        */
++    0,                                         /* tp_members        */
++    Worktree_getseters,                        /* tp_getset         */
++    0,                                         /* tp_base           */
++    0,                                         /* tp_dict           */
++    0,                                         /* tp_descr_get      */
++    0,                                         /* tp_descr_set      */
++    0,                                         /* tp_dictoffset     */
++    0,                                         /* tp_init           */
++    0,                                         /* tp_alloc          */
++    0,                                         /* tp_new            */
++};
++
++PyObject *
++wrap_worktree(Repository* repo, git_worktree* wt)
++{
++    Worktree* py_wt = NULL;
++
++    py_wt = PyObject_New(Worktree, &WorktreeType);
++    if (py_wt == NULL) {
++        PyErr_NoMemory();
++        return NULL;
++    }
++
++    py_wt->repo = repo;
++    Py_INCREF(repo);
++    py_wt->worktree = wt;
++
++    return (PyObject*) py_wt;
++}
++
++
+diff --git a/src/worktree.h b/src/worktree.h
+new file mode 100644
+index 0000000..12bb44a
+--- /dev/null
++++ b/src/worktree.h
+@@ -0,0 +1,47 @@
++/*
++ * Copyright 2010-2015 The pygit2 contributors
++ *
++ * This file is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License, version 2,
++ * as published by the Free Software Foundation.
++ *
++ * In addition to the permissions in the GNU General Public License,
++ * the authors give you unlimited permission to link the compiled
++ * version of this file into combinations with other programs,
++ * and to distribute those combinations without any restriction
++ * coming from the use of this file.  (The General Public License
++ * restrictions do apply in other respects; for example, they cover
++ * modification of the file, and distribution when not linked into
++ * a combined executable.)
++ *
++ * This file is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; see the file COPYING.  If not, write to
++ * the Free Software Foundation, 51 Franklin Street, Fifth Floor,
++ * Boston, MA 02110-1301, USA.
++ */
++
++#ifndef INCLUDE_pygit2_worktree_h
++#define INCLUDE_pygit2_worktree_h
++
++#define PY_SSIZE_T_CLEAN
++#include <Python.h>
++#include <git2.h>
++#include <git2/worktree.h>
++
++typedef struct git_worktree {
++	char *name;
++	char *gitlink_path;
++	char *gitdir_path;
++	char *commondir_path;
++	char *parent_path;
++	int locked:1;
++} git_worktree;
++
++PyObject* wrap_worktree(Repository* repo, git_worktree* wt);
++
++#endif

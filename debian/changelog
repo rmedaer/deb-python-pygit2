@@ -1,3 +1,9 @@
+python-pygit2 (0.25.0-0.1sid1) UNRELEASED; urgency=medium
+
+  * Added SID patches. 
+
+ -- Raphael Medaer <raphael@medaer.me>  Wed, 08 Mar 2017 13:22:53 +0100
+
 python-pygit2 (0.25.0-0.1) unstable; urgency=medium
 
   * New upstream release
